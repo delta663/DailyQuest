@@ -11,11 +11,11 @@ DailyQuest is a **server-side** V Rising mod featuring three rotating quest tier
 - **New Reward Buff Feature:** Added a new feature that grants players a buff when claiming quest rewards. You can enable/disable this feature and customize the buff prefab in the configuration.
 
 ## Features
+- Includes 116 default quests. [Full List](https://docs.google.com/spreadsheets/d/1SDk_sXa2gTPuOzP8ikWq-xD91dRlleRdaPqNNEIcwRU)
 - Assigns **3 daily quests** to each player every day:
   - **Quest 1 (Easy)**
   - **Quest 2 (Medium)**
   - **Quest 3 (Hard)**
-- Includes 116 default quests. [Full List](https://docs.google.com/spreadsheets/d/1SDk_sXa2gTPuOzP8ikWq-xD91dRlleRdaPqNNEIcwRU)
 - Tracks kill progress automatically
 - Stores daily quest progress per player
 - Uses a simple JSON configuration file
