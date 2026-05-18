@@ -5,14 +5,15 @@ using ProjectM.Network;
 using Unity.Collections;
 using ProjectM;
 using Stunlock.Core;
+using Unity.Entities;
 
 namespace DailyQuest.Services;
 
 internal static partial class QuestService
 {
-    public static string BuildStatusText(ulong sid, string playerName)
+    public static string BuildStatusText(ulong sid, string playerName, Entity characterEntity = default)
     {
-        EnsureAssignedForToday(sid, playerName);
+        EnsureAssignedForToday(sid, playerName, characterEntity);
 
         lock (_lock)
         {
@@ -30,10 +31,34 @@ internal static partial class QuestService
 
             return
                 $"<color=yellow>Daily Quests (Reset in {GetNextResetText()})</color>\n" +
-                easyBlock + "\n\n" +
-                mediumBlock + "\n\n" +
-                hardBlock + "\n";
+                easyBlock + "\n" +
+                mediumBlock + "\n" +
+                hardBlock;
         }
+    }
+
+    private static string BuildQuestBlock_NoLock(string label, QuestDef quest, int progress, bool claimed)
+    {
+        if (quest == null)
+            return $"<color=#87CEFA>Quest {label}</color>: <color=yellow>No quest {label.ToLowerInvariant()} configured.</color>";
+
+        int need = Math.Max(0, quest.RequiredKills);
+        int prog = Math.Max(0, progress);
+        if (prog > need) prog = need;
+
+        string rewardText = GetRewardDisplay_NoLock(quest);
+
+        bool done = need > 0 && prog >= need;
+        string statusText = done
+            ? (claimed
+                ? "Reward claimed"
+                : "Completed! Claim with .quest reward")
+            : $"Progress {prog}/{need}";
+
+        return
+            $"<color=#87CEFA>Quest {label}</color>: {quest.Name} x{need}\n" +
+            $"Reward: {rewardText}\n" +
+            $"Status: {statusText}";
     }
 
     public static string BuildPlayerStatusTextByName(string playerName)
@@ -64,7 +89,7 @@ internal static partial class QuestService
             string today = DateTime.Now.ToString("yyyy-MM-dd");
             bool isToday = string.Equals(st.Date, today, StringComparison.Ordinal);
 
-            string header = $"<color=yellow>Daily Quest: <color=white>{st.Name}</color></color>";
+            string header = $"<color=yellow>Daily Quests: <color=white>{st.Name}</color></color>";
             string dateLine = isToday
                 ? $"<color=#87CEFA>Quest Date</color>: {st.Date}"
                 : $"<color=#87CEFA>Quest Date</color>: {st.Date} (Outdated)";
@@ -76,30 +101,6 @@ internal static partial class QuestService
                 hardBlock + "\n" +
                 dateLine;
         }
-    }
-
-    private static string BuildQuestBlock_NoLock(string label, QuestDef quest, int progress, bool claimed)
-    {
-        if (quest == null)
-            return $"<color=#87CEFA>Quest {label}</color>: <color=yellow>No quest {label.ToLowerInvariant()} configured.</color>";
-
-        int need = Math.Max(0, quest.RequiredKills);
-        int prog = Math.Max(0, progress);
-        if (prog > need) prog = need;
-
-        string rewardText = GetRewardDisplay_NoLock(quest);
-
-        bool done = need > 0 && prog >= need;
-        string statusText = done
-            ? (claimed
-                ? "Reward claimed"
-                : "Completed! Claim with .quest reward")
-            : $"Progress {prog}/{need}";
-
-        return
-            $"<color=#87CEFA>Quest {label}</color>: {quest.Name} x{need}\n" +
-            $"Reward: {rewardText}\n" +
-            $"Status: {statusText}";
     }
 
     private static string BuildAdminQuestLine_NoLock(string label, QuestDef quest, int progress, bool claimed)
@@ -120,6 +121,57 @@ internal static partial class QuestService
         string questName = string.IsNullOrWhiteSpace(quest.Name) ? $"Quest {label}" : quest.Name;
 
         return $"<color=#87CEFA>Quest {label}</color>: {questName} {status}";
+    }
+
+    private static bool TryClaimOne_NoLock(Entity userEntity, Entity characterEntity, string label, string questId, int progress, bool alreadyClaimed, out string replyText, out PrefabGUID rewardPrefabOut, out int rewardAmountOut)
+    {
+        replyText = "";
+        rewardPrefabOut = new PrefabGUID(0);
+        rewardAmountOut = 0;
+
+        if (string.IsNullOrWhiteSpace(questId))
+        {
+            replyText = $"<color=#87CEFA>Quest {label}</color>: not assigned today."; return false;
+        }
+
+        var quest = GetQuestById_NoLock(questId);
+        if (quest == null)
+        {
+            replyText = $"<color=#87CEFA>Quest {label}</color>: not found in config."; return false;
+        }
+
+        int need = Math.Max(0, quest.RequiredKills);
+        if (need <= 0)
+        {
+            replyText = $"<color=#87CEFA>Quest {label}</color>: has invalid requiredKills."; return false;
+        }
+
+        if (progress < need)
+        {
+            replyText = $"<color=#87CEFA>Quest {label}</color>: not completed yet. Use <color=green>.quest daily</color> to check."; return false;
+        }
+
+        if (alreadyClaimed)
+        {
+            replyText = $"<color=#87CEFA>Quest {label}</color>: reward already claimed today."; return false;
+        }
+
+        if (!TryResolveRewardPrefab_NoLock(quest, out var rewardPrefab, out var rewardName))
+        {
+            replyText = "<color=red>Reward prefab not configured correctly.</color>"; return false;
+        }
+
+        int amount = Math.Max(0, quest.Reward?.Amount ?? 0);
+        if (amount <= 0)
+        {
+            replyText = "<color=red>Reward amount invalid.</color>"; return false;
+        }
+
+        rewardPrefabOut = rewardPrefab;
+        rewardAmountOut = amount;
+
+        replyText = $"<color=#87CEFA>Quest {label}</color>: reward claimed <color=#87CEFA>{amount}x {rewardName}</color>";
+        return true;
     }
 
     private static void SendQuestToast(User user, string label, string questName, int prog, int need, bool done)
