@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 
 namespace DailyQuest.Models;
 
-internal sealed class QuestConfig
+public sealed class QuestConfig
 {
     [JsonPropertyName("GearRepairOnClaim")]
     public bool RepairOnClaim { get; set; } = false;
@@ -13,7 +13,7 @@ internal sealed class QuestConfig
     public List<QuestDef> Quests { get; set; } = new();
 }
 
-internal sealed class QuestDef
+public sealed class QuestDef
 {
     [JsonPropertyName("ID")]
     public string Id { get; set; }
@@ -34,7 +34,7 @@ internal sealed class QuestDef
     public RewardDef Reward { get; set; }
 }
 
-internal sealed class RewardDef
+public sealed class RewardDef
 {
     [JsonPropertyName("Prefab")]
     public int Prefab { get; set; }
@@ -46,7 +46,7 @@ internal sealed class RewardDef
     public int Amount { get; set; }
 }
 
-internal sealed class PlayerQuestState
+public sealed class PlayerQuestState
 {
     [JsonPropertyName("SteamID")]
     public ulong SteamId { get; set; }
@@ -83,4 +83,7 @@ internal sealed class PlayerQuestState
 
     [JsonPropertyName("HardClaimed")]
     public bool HardClaimed { get; set; }
+
+    [JsonPropertyName("ClaimedBuffPrefab")]
+    public int ClaimedBuffPrefab { get; set; }
 }
