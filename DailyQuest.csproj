@@ -2,14 +2,14 @@
 	<PropertyGroup>
 		<TargetFramework>net6.0</TargetFramework>
 		<AssemblyName>DailyQuest</AssemblyName>
-		<Description>Daily quest mod for V Rising servers</Description>
-		<Version>1.0.4</Version>
+		<Description>A daily quest system for V Rising featuring three rotating quest tiers, customizable quest rewards, optional gear repair, reward buffs, and Discord webhook notifications</Description>
+		<Version>1.1.0</Version>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<LangVersion>latest</LangVersion>
 	</PropertyGroup>
 	<ItemGroup>
     <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
-    <PackageReference Include="VRising.VampireCommandFramework" Version="0.10.*" />
+    <PackageReference Include="VRising.VampireCommandFramework" Version="0.11.*" />
     <PackageReference Include="System.Text.Json" Version="6.0.11" />
   </ItemGroup>
 
