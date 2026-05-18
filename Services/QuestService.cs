@@ -26,18 +26,18 @@ internal static partial class QuestService
 
     private static QuestConfig _config = new();
     private static Dictionary<string, QuestDef> _questsById = new(StringComparer.Ordinal);
-    private static List<QuestDef> _enabledQuests = new();
-    private static List<QuestDef> _enabledEasyQuests = new();
-    private static List<QuestDef> _enabledMediumQuests = new();
-    private static List<QuestDef> _enabledHardQuests = new();
+    private static List<QuestDef> _allQuests = new();
+    private static List<QuestDef> _easyQuests = new();
+    private static List<QuestDef> _mediumQuests = new();
+    private static List<QuestDef> _hardQuests = new();
     private static Dictionary<string, PlayerQuestState> _players = new();
 
-    private static DateTime _lastDate = DateTime.MinValue.Date;
+    private static HashSet<int> _allActiveTargetPrefabs = new();
 
-    private const int SaveIntervalSeconds = 10;
-    private static bool _dirty;
-    private static DateTime _nextSave = DateTime.MinValue;
-    private static Coroutine _tickCoroutine;
+    private static string _cachedTodayString = DateTime.Now.ToString("yyyy-MM-dd");
+    private static string TodayString() => _cachedTodayString;
+
+    private static DateTime _lastDate = DateTime.MinValue.Date;
     private static bool _initialized;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -48,44 +48,63 @@ internal static partial class QuestService
         PropertyNameCaseInsensitive = true
     };
 
+    public static bool IsQuestTarget(int prefabHash)
+    {
+        return _allActiveTargetPrefabs.Contains(prefabHash);
+    }
+
     public static void Initialize()
     {
         lock (_lock)
         {
-            EnsureFilesExist();
-            LoadConfig_NoLock(createIfMissing: true);
-            LoadPlayers_NoLock();
-
-            _lastDate = DateTime.Now.Date;
-
-            if (_tickCoroutine == null)
-                _tickCoroutine = Core.StartCoroutine(TickLoop());
-
-            _initialized = true;
+            EnsureInitialized_NoLock();
         }
 
-        Core.Log.LogInfo("[Quest] QuestService initialized");
+     // Core.Log.LogInfo("[Quest] QuestService initialized");
+    }
+
+    private static void EnsureInitialized_NoLock()
+    {
+        if (_initialized)
+            return;
+
+        EnsureFilesExist(); 
+        LoadConfig_NoLock();
+        LoadPlayers_NoLock();
+
+        SaveThrottle.Init(() => SavePlayers_NoLock(), TimeSpan.FromSeconds(10));
+
+        _lastDate = DateTime.Now.Date;
+        _initialized = true;
+
+     // Core.Log.LogInfo("[Quest] QuestService EnsureInitialized");
     }
 
     public static void Reload()
     {
         lock (_lock)
         {
+            if (Plugin.PluginConfig != null)
+            {
+                Plugin.PluginConfig.Reload();
+            }
+
             EnsureFilesExist();
-            LoadConfig_NoLock(createIfMissing: false);
+            LoadConfig_NoLock();
             _initialized = true;
         }
 
-        Core.Log.LogInfo("[Quest] quest_config.json reloaded");
+        Core.Log.LogInfo("[Quest] DailyQuest.cfg and quest_config.json reloaded successfully");
     }
 
-    public static void EnsureAssignedForToday(ulong sid, string playerName)
+    public static void EnsureAssignedForToday(ulong sid, string playerName, Entity characterEntity = default)
     {
         if (sid == 0) return;
 
         lock (_lock)
         {
             EnsureInitialized_NoLock();
+            RollDateIfNeeded_NoLock();
 
             string today = TodayString();
             var key = sid.ToString();
@@ -141,12 +160,16 @@ internal static partial class QuestService
                 st.HardClaimed = false;
 
                 changed = true;
+
+                if (Helper.TryRemoveDailyQuestBuff(characterEntity, st))
+                {
+                    changed = true;
+                }
             }
 
             if (string.IsNullOrWhiteSpace(st.EasyQuestId))
             {
-                var pool = _enabledEasyQuests.Count > 0 ? _enabledEasyQuests : _enabledQuests;
-                st.EasyQuestId = PickQuestId_NoLock(sid, today, "easy", pool);
+                st.EasyQuestId = PickQuestId_NoLock(sid, today, "easy", _easyQuests);
                 st.EasyProgress = 0;
                 st.EasyClaimed = false;
                 changed = true;
@@ -154,7 +177,7 @@ internal static partial class QuestService
 
             if (string.IsNullOrWhiteSpace(st.MediumQuestId))
             {
-                st.MediumQuestId = PickQuestId_NoLock(sid, today, "medium", _enabledMediumQuests);
+                st.MediumQuestId = PickQuestId_NoLock(sid, today, "medium", _mediumQuests);
                 st.MediumProgress = 0;
                 st.MediumClaimed = false;
                 changed = true;
@@ -162,7 +185,7 @@ internal static partial class QuestService
 
             if (string.IsNullOrWhiteSpace(st.HardQuestId))
             {
-                st.HardQuestId = PickQuestId_NoLock(sid, today, "hard", _enabledHardQuests);
+                st.HardQuestId = PickQuestId_NoLock(sid, today, "hard", _hardQuests);
                 st.HardProgress = 0;
                 st.HardClaimed = false;
                 changed = true;
@@ -171,7 +194,7 @@ internal static partial class QuestService
             if (changed)
             {
                 _players[key] = st;
-                MarkDirty_NoLock();
+                SaveThrottle.MarkDirty();
             }
         }
     }
@@ -192,123 +215,82 @@ internal static partial class QuestService
             var userEntity = ctx.Event.SenderUserEntity;
             bool claimedAny = false;
             var claimedNames = new List<string>(3);
+            var pendingRewards = new List<(PrefabGUID prefab, int amount)>();
 
-            if (TryClaimOne_NoLock(ctx, userEntity, characterEntity, "1", st.EasyQuestId, st.EasyProgress, st.EasyClaimed, out var replyEasy))
+            if (TryClaimOne_NoLock(userEntity, characterEntity, "1", st.EasyQuestId, st.EasyProgress, st.EasyClaimed, out var replyEasy, out var prefab1, out var amount1))
             {
                 st.EasyClaimed = true;
-                ctx.Reply(replyEasy);
                 claimedAny = true;
+                pendingRewards.Add((prefab1, amount1));
 
-                if (_config.RepairOnClaim)
-                {
-                    try
-                    {
-                        Helper.RepairAmulet(characterEntity);
-                    }
-                    catch (Exception e)
-                    {
-                        Core.LogException(e);
-                    }
-                }
-
+                if (Plugin.GearRepairOnClaimEnabled != null && Plugin.GearRepairOnClaimEnabled.Value) Helper.RepairAmulet(characterEntity);
+                
                 var q = GetQuestById_NoLock(st.EasyQuestId);
                 int need = Math.Max(0, q?.RequiredKills ?? 0);
                 claimedNames.Add(q != null ? $"{q.Name} x{need}" : "Quest 1");
             }
 
-            if (TryClaimOne_NoLock(ctx, userEntity, characterEntity, "2", st.MediumQuestId, st.MediumProgress, st.MediumClaimed, out var replyMedium))
+            if (TryClaimOne_NoLock(userEntity, characterEntity, "2", st.MediumQuestId, st.MediumProgress, st.MediumClaimed, out var replyMedium, out var prefab2, out var amount2))
             {
                 st.MediumClaimed = true;
-                ctx.Reply(replyMedium);
                 claimedAny = true;
+                pendingRewards.Add((prefab2, amount2));
 
-                if (_config.RepairOnClaim)
-                {
-                    try
-                    {
-                        Helper.RepairArmor(characterEntity);
-                    }
-                    catch (Exception e)
-                    {
-                        Core.LogException(e);
-                    }
-                }
+                if (Plugin.GearRepairOnClaimEnabled != null && Plugin.GearRepairOnClaimEnabled.Value) Helper.RepairArmor(characterEntity);
 
                 var q = GetQuestById_NoLock(st.MediumQuestId);
                 int need = Math.Max(0, q?.RequiredKills ?? 0);
                 claimedNames.Add(q != null ? $"{q.Name} x{need}" : "Quest 2");
             }
 
-            if (TryClaimOne_NoLock(ctx, userEntity, characterEntity, "3", st.HardQuestId, st.HardProgress, st.HardClaimed, out var replyHard))
+            if (TryClaimOne_NoLock(userEntity, characterEntity, "3", st.HardQuestId, st.HardProgress, st.HardClaimed, out var replyHard, out var prefab3, out var amount3))
             {
                 st.HardClaimed = true;
-                ctx.Reply(replyHard);
                 claimedAny = true;
+                pendingRewards.Add((prefab3, amount3));
 
-                if (_config.RepairOnClaim)
-                {
-                    try
-                    {
-                        Helper.RepairWeapon(characterEntity);
-                    }
-                    catch (Exception e)
-                    {
-                        Core.LogException(e);
-                    }
-                }
+                if (Plugin.GearRepairOnClaimEnabled != null && Plugin.GearRepairOnClaimEnabled.Value) Helper.RepairWeapon(characterEntity);
 
                 var q = GetQuestById_NoLock(st.HardQuestId);
                 int need = Math.Max(0, q?.RequiredKills ?? 0);
                 claimedNames.Add(q != null ? $"{q.Name} x{need}" : "Quest 3");
             }
 
+            string finalMessage = 
+                $"<color=yellow>Daily Quests (Reset in {GetNextResetText()})</color>\n" +
+                replyEasy + "\n" +
+                replyMedium + "\n" +
+                replyHard;
+
             if (!claimedAny)
+            {
+                ctx.Reply(finalMessage);
                 return false;
+            }
+
+            foreach (var reward in pendingRewards)
+            {
+                Helper.AddItemToInventory(characterEntity, reward.prefab, reward.amount);
+            }
+
+            Helper.TrySendBroadcastMessage(playerName, claimedNames);
+            Helper.TrySendWebhookMessage(playerName, claimedNames);
+            Helper.TryAddDailyQuestBuff(userEntity, characterEntity, st);
 
             _players[key] = st;
-            MarkDirty_NoLock();
-            ForceSave_NoLock();
+            SaveThrottle.ForceSave();
 
-            string list = string.Join(", ", claimedNames);
-            string msg = $"<color=white>{playerName}</color> completed and claimed rewards for: {list}. Use <color=green>.quest daily</color> to check your quests.";
+            ctx.Reply(finalMessage);
 
-            var fs = new FixedString512Bytes(msg);
-            ServerChatUtils.SendSystemMessageToAllClients(Core.EntityManager, ref fs);
-
-            TrySendClaimWebhook(playerName, list);
             return true;
         }
     }
 
-    private static void TrySendClaimWebhook(string playerName, string list)
-    {
-        string message = $"**[Daily quest]** - **{playerName}** has completed and claimed the rewards for {list}";
-        _ = SendClaimWebhookAsync(message);
-    }
-
-    private static async Task SendClaimWebhookAsync(string message)
-    {
-        try
-        {
-            var (ok, error) = await WebhookService.SendAsync(message).ConfigureAwait(false);
-            if (!ok && !string.IsNullOrWhiteSpace(error) &&
-                !string.Equals(error, "Webhook is disabled.", StringComparison.Ordinal) &&
-                !string.Equals(error, "Webhook URL is empty.", StringComparison.Ordinal))
-            {
-                Core.Log.LogWarning($"[Webhook] {error}");
-            }
-        }
-        catch (Exception e)
-        {
-            Core.LogException(e);
-        }
-    }
-
-    public static void OnKilledPrefab(ulong sid, int diedPrefabGuidHash, User user, string playerNameForEnsure = "")
+    public static void OnKilledPrefab(ulong sid, int diedPrefabGuidHash, User user, string playerNameForEnsure = "", Entity characterEntity = default)
     {
         if (sid == 0 || diedPrefabGuidHash == 0) return;
 
-        EnsureAssignedForToday(sid, playerNameForEnsure);
+        EnsureAssignedForToday(sid, playerNameForEnsure, characterEntity);
 
         lock (_lock)
         {
@@ -372,86 +354,9 @@ internal static partial class QuestService
             if (changed)
             {
                 _players[key] = st;
-                MarkDirty_NoLock();
+                SaveThrottle.MarkDirty();
             }
         }
-    }
-
-    private static void EnsureInitialized_NoLock()
-    {
-        if (_initialized)
-            return;
-
-        EnsureFilesExist();
-        LoadConfig_NoLock(createIfMissing: true);
-        LoadPlayers_NoLock();
-
-        _lastDate = DateTime.Now.Date;
-        _initialized = true;
-
-        Core.Log.LogInfo("[Quest] QuestService lazy-initialized");
-    }
-
-    private static bool TryClaimOne_NoLock(
-        ChatCommandContext ctx,
-        Entity userEntity,
-        Entity characterEntity,
-        string label,
-        string questId,
-        int progress,
-        bool alreadyClaimed,
-        out string replyText)
-    {
-        replyText = "";
-
-        if (string.IsNullOrWhiteSpace(questId))
-        {
-            ctx.Reply($"<color=yellow>Quest {label} not assigned today.</color>");
-            return false;
-        }
-
-        var quest = GetQuestById_NoLock(questId);
-        if (quest == null)
-        {
-            ctx.Reply($"<color=red>Quest {label} not found in config.</color>");
-            return false;
-        }
-
-        int need = Math.Max(0, quest.RequiredKills);
-        if (need <= 0)
-        {
-            ctx.Reply($"<color=red>Quest {label} has invalid requiredKills.</color>");
-            return false;
-        }
-
-        if (progress < need)
-        {
-            ctx.Reply($"<color=yellow>Quest {label} not completed yet.</color> Use <color=green>.quest daily</color> to check.");
-            return false;
-        }
-
-        if (alreadyClaimed)
-        {
-            ctx.Reply($"<color=yellow>Quest {label} reward already claimed today.</color>");
-            return false;
-        }
-
-        if (!TryResolveRewardPrefab_NoLock(quest, out var rewardPrefab, out var rewardName))
-        {
-            ctx.Reply("<color=red>Reward prefab not configured correctly.</color>");
-            return false;
-        }
-
-        int amount = Math.Max(0, quest.Reward?.Amount ?? 0);
-        if (amount <= 0)
-        {
-            ctx.Reply("<color=red>Reward amount invalid.</color>");
-            return false;
-        }
-
-        Helper.AddItemToInventory(characterEntity, rewardPrefab, amount);
-        replyText = $"<color=green>Quest {label} reward claimed</color> <color=#87CEFA>{amount}x {rewardName}</color>";
-        return true;
     }
 
     private static void RollDateIfNeeded_NoLock()
@@ -460,10 +365,10 @@ internal static partial class QuestService
         if (nowDate == _lastDate) return;
 
         _lastDate = nowDate;
+        _cachedTodayString = _lastDate.ToString("yyyy-MM-dd");
+        
         Core.Log.LogInfo($"[Quest] New day detected: {_lastDate:yyyy-MM-dd}");
     }
-
-    private static string TodayString() => DateTime.Now.ToString("yyyy-MM-dd");
 
     private static string GetNextResetText()
     {
@@ -521,43 +426,73 @@ internal static partial class QuestService
         return true;
     }
 
-    private static void MarkDirty_NoLock()
-    {
-        _dirty = true;
-        if (_nextSave == DateTime.MinValue)
-            _nextSave = DateTime.Now.AddSeconds(SaveIntervalSeconds);
-    }
-
-    internal static void Tick()
+    public static void AdminRemoveBuff(ChatCommandContext ctx, string targetPlayerName)
     {
         lock (_lock)
         {
-            RollDateIfNeeded_NoLock();
+            EnsureInitialized_NoLock();
 
-            if (!_dirty) return;
-            if (_nextSave != DateTime.MinValue && DateTime.Now < _nextSave) return;
+            var targetState = _players.Values.FirstOrDefault(x => x != null && string.Equals(x.Name, targetPlayerName, StringComparison.OrdinalIgnoreCase));
 
-            SavePlayers_NoLock();
-            _dirty = false;
-            _nextSave = DateTime.MinValue;
-        }
-    }
+            if (targetState == null)
+            {
+                ctx.Reply($"<color=red>Player {targetPlayerName} not found in quest data.</color>");
+                return;
+            }
 
-    private static void ForceSave_NoLock()
-    {
-        SavePlayers_NoLock();
-        _dirty = false;
-        _nextSave = DateTime.MinValue;
-    }
+            Entity charEntity = Entity.Null;
+            var userEntities = Helper.GetEntitiesByComponentType<User>(); 
+            
+            try
+            {
+                foreach (var uEntity in userEntities)
+                {
+                    var user = uEntity.Read<User>(); 
+                    if (user.PlatformId == targetState.SteamId) 
+                    {
+                        charEntity = user.LocalCharacter._Entity;
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                if (userEntities.IsCreated) userEntities.Dispose();
+            }
 
-    private static IEnumerator TickLoop()
-    {
-        while (true)
-        {
-            try { Tick(); }
-            catch (Exception e) { Core.LogException(e); }
+            if (charEntity == Entity.Null)
+            {
+                ctx.Reply($"<color=red>Could not find physical character for {targetState.Name}.</color>");
+                return;
+            }
 
-            yield return new WaitForSeconds(1f);
+            if (targetState.ClaimedBuffPrefab == 0)
+            {
+                int configBuffId = Plugin.ClaimedBuffPrefab?.Value ?? 0;
+                if (configBuffId != 0)
+                {
+                    Buffs.RemoveBuff(charEntity, new PrefabGUID(configBuffId));
+                    ctx.Reply($"<color=green>Force removed config buff from {targetState.Name}.</color>");
+                }
+                else
+                {
+                    ctx.Reply($"<color=yellow>Player {targetState.Name} has no active buff history.</color>");
+                }
+                return;
+            }
+
+            if (Helper.TryRemoveDailyQuestBuff(charEntity, targetState))
+            {
+                var key = targetState.SteamId.ToString();
+                _players[key] = targetState; 
+                SaveThrottle.ForceSave(); 
+
+                ctx.Reply($"<color=green>Successfully removed daily quest buff from</color> <color=white>{targetState.Name}</color>.");
+            }
+            else
+            {
+                ctx.Reply($"<color=red>Failed to remove buff from {targetState.Name}.</color>");
+            }
         }
     }
 }
