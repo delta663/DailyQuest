@@ -14,7 +14,6 @@ namespace DailyQuest;
 internal static class Core
 {
     private static World _server;
-    private static MonoBehaviour monoBehaviour;
     private static bool _hasInitialized = false;
 
     public const int MAX_REPLY_LENGTH = 509;
@@ -38,7 +37,7 @@ internal static class Core
 
     public static void LogException(System.Exception e, [CallerMemberName] string caller = null)
     {
-        Log.LogError($"Failure in {caller}\nMessage: {e.Message} Inner:{e.InnerException?.Message}\n\nStack: {e.StackTrace}\nInner Stack: {e.InnerException?.StackTrace}");
+        Log.LogError($"Failure in {caller}\nMessage: {e.Message} Inner: {e.InnerException?.Message}\n\nStack: {e.StackTrace}\nInner Stack: {e.InnerException?.StackTrace}");
     }
 
     internal static bool IsServerReady()
@@ -64,11 +63,8 @@ internal static class Core
 
         QuestService.Initialize();
 
-        if (!WebhookService.Reload(out var webhookError))
-            Log.LogWarning($"Failed to load webhook_config.json: {webhookError}");
-
         _hasInitialized = true;
-        Log.LogInfo($"{nameof(InitializeAfterLoaded)} completed");
+     // Log.LogInfo($"{nameof(InitializeAfterLoaded)} completed");
     }
 
     private static World GetWorld(string name)
@@ -80,23 +76,5 @@ internal static class Core
         }
 
         return null;
-    }
-
-    public static Coroutine StartCoroutine(IEnumerator routine)
-    {
-        if (monoBehaviour == null)
-        {
-            var go = new GameObject("DailyQuest");
-            monoBehaviour = go.AddComponent<IgnorePhysicsDebugSystem>();
-            Object.DontDestroyOnLoad(go);
-        }
-
-        return monoBehaviour.StartCoroutine(routine.WrapToIl2Cpp());
-    }
-
-    public static void StopCoroutine(Coroutine coroutine)
-    {
-        if (monoBehaviour == null) return;
-        monoBehaviour.StopCoroutine(coroutine);
     }
 }
