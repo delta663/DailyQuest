@@ -2,9 +2,7 @@ namespace DailyQuest.Config;
 
 internal static class DefaultQuestConfig
 {
-    public const string QuestConfigJson = @"{
-  ""GearRepairOnClaim"": false,
-  ""Quests"": [
+    public const string QuestConfigJson = @"[
     {
       ""ID"": ""1_1"",
       ""Name"": ""kill Wolves"",
@@ -1432,7 +1430,7 @@ internal static class DefaultQuestConfig
       ""Name"": ""kill Willfred"",
       ""Difficulty"": ""hard"",
       ""TargetPrefabs"": [
-        -1007062401
+        -1505705712
       ],
       ""RequiredKills"": 8,
       ""Reward"": {
@@ -1699,6 +1697,5 @@ internal static class DefaultQuestConfig
         ""Amount"": 400
       }
     }
-  ]
-}";
+  ]";
 }
