@@ -63,14 +63,6 @@ internal static class QuestKillHookDeathEventListenerSystem
         try
         {
             var em = __instance.EntityManager;
-
-            /*
-            var q = em.CreateEntityQuery(ComponentType.ReadOnly<DeathEvent>());
-            if (q.CalculateEntityCount() == 0)
-                return;
-            */
-
-            // Use existing system query when an equivalent is available.
             var events = __instance._DeathEventQuery.ToComponentDataArray<DeathEvent>(Allocator.Temp);
 
             try
@@ -86,24 +78,26 @@ internal static class QuestKillHookDeathEventListenerSystem
                     if (died.Has<PlayerCharacter>())
                         continue;
 
-                    if (!TryResolvePlayerFromKiller(ev.Killer, em, out _, out var userEnt, out var sid))
-                        continue;
-
                     var diedPrefab = Helper.GetPrefabGUID(died);
                     if (diedPrefab.GuidHash == 0)
+                        continue;
+
+                    if (!QuestService.IsQuestTarget(diedPrefab.GuidHash))
+                        continue;
+
+                    if (!TryResolvePlayerFromKiller(ev.Killer, em, out var playerChar, out var userEnt, out var sid))
                         continue;
 
                     if (!userEnt.Has<User>())
                         continue;
 
                     var user = userEnt.Read<User>();
-                    QuestService.OnKilledPrefab(sid, diedPrefab.GuidHash, user, user.CharacterName.ToString());
+                    QuestService.OnKilledPrefab(sid, diedPrefab.GuidHash, user, user.CharacterName.ToString(), playerChar);
                 }
             }
             finally
             {
                 if (events.IsCreated) events.Dispose();
-                QuestService.Tick();
             }
         }
         catch (Exception e)
