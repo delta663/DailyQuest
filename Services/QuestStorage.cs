@@ -36,16 +36,14 @@ internal static partial class QuestService
     private static void RebuildQuestIndex_NoLock()
     {
         _questsById = new Dictionary<string, QuestDef>(StringComparer.Ordinal);
-        _enabledQuests = new List<QuestDef>();
-        _enabledEasyQuests = new List<QuestDef>();
-        _enabledMediumQuests = new List<QuestDef>();
-        _enabledHardQuests = new List<QuestDef>();
+        _allQuests = new List<QuestDef>();
+        _easyQuests = new List<QuestDef>();
+        _mediumQuests = new List<QuestDef>();
+        _hardQuests = new List<QuestDef>();
 
-        if (_config?.Quests == null)
-        {
-            Core.Log.LogWarning("[Quest] _config.Quests is null");
-            return;
-        }
+        _allActiveTargetPrefabs = new HashSet<int>();
+
+        if (_config?.Quests == null) return;
 
         foreach (var q in _config.Quests)
         {
@@ -54,43 +52,34 @@ internal static partial class QuestService
             if (!string.IsNullOrWhiteSpace(q.Id))
                 _questsById[q.Id] = q;
 
-            _enabledQuests.Add(q);
+            _allQuests.Add(q);
+
+            if (q.TargetPrefabs != null)
+            {
+                foreach (var prefab in q.TargetPrefabs)
+                {
+                    _allActiveTargetPrefabs.Add(prefab);
+                }
+            }
 
             var diff = (q.Difficulty ?? "easy").Trim().ToLowerInvariant();
             if (diff == "hard")
-                _enabledHardQuests.Add(q);
+                _hardQuests.Add(q);
             else if (diff == "medium")
-                _enabledMediumQuests.Add(q);
+                _mediumQuests.Add(q);
             else
-                _enabledEasyQuests.Add(q);
+                _easyQuests.Add(q);
         }
-
-        Core.Log.LogInfo($"[Quest] Loaded quests: all {_enabledQuests.Count}, easy {_enabledEasyQuests.Count}, medium {_enabledMediumQuests.Count}, hard {_enabledHardQuests.Count}");
     }
 
-    private static void LoadConfig_NoLock(bool createIfMissing)
+    private static void LoadConfig_NoLock()
     {
-        Directory.CreateDirectory(CONFIG_DIR);
-
-        if (!File.Exists(CONFIG_FILE))
-        {
-            if (!createIfMissing)
-            {
-                Core.Log.LogWarning($"[Quest] Config not found: {CONFIG_FILE}");
-                _config = new QuestConfig();
-                RebuildQuestIndex_NoLock();
-                return;
-            }
-
-            File.WriteAllText(CONFIG_FILE, DefaultQuestConfig.QuestConfigJson);
-            Core.Log.LogInfo($"[Quest] Created config: {CONFIG_FILE}");
-        }
-
         try
         {
-            var json = File.ReadAllText(CONFIG_FILE);
-            _config = JsonSerializer.Deserialize<QuestConfig>(json, JsonOpts) ?? new QuestConfig();
-            _config.Quests ??= new List<QuestDef>();
+            string json = File.ReadAllText(CONFIG_FILE);            
+            var questList = JsonSerializer.Deserialize<List<QuestDef>>(json, JsonOpts);
+            _config = new QuestConfig { Quests = questList ?? new List<QuestDef>() };
+            
             RebuildQuestIndex_NoLock();
         }
         catch (Exception e)
